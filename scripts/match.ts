@@ -18,7 +18,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import {
   puntuar,
   pasaBlocking,
-  conjuntoRasgos,
+  perfilRasgos,
   type PersonaAM,
   type ForensePM,
 } from "@/lib/matching/score";
@@ -112,9 +112,9 @@ async function main() {
     return;
   }
 
-  // 2) Pre-calcular los conjuntos de tatuajes/señas UNA vez (acelera el cruce).
-  const rasgosPersona = new Map(personas.map((p) => [p.id, conjuntoRasgos(p.rasgos)]));
-  const rasgosForense = new Map(forenses.map((f) => [f.id, conjuntoRasgos(f.rasgos)]));
+  // 2) Pre-calcular los perfiles de tatuajes/señas UNA vez (acelera el cruce).
+  const rasgosPersona = new Map(personas.map((p) => [p.id, perfilRasgos(p.rasgos)]));
+  const rasgosForense = new Map(forenses.map((f) => [f.id, perfilRasgos(f.rasgos)]));
 
   // 3) BLOCKING indexado: agrupamos forenses por estado. Un forense SIN estado
   //    es "comodín" (puede emparejar con cualquier estado), así que va aparte y

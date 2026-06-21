@@ -20,11 +20,24 @@
  * NOTA sobre tatuajes y el esquema real: el spec modela los tatuajes como
  * conjuntos de (tipo, ubicación_cuerpo). En este repo, sin embargo, `rasgos`
  * es un jsonb donde la fuente (IJCF Jalisco) guarda los tatuajes y señas como
- * TEXTO LIBRE (no como pares estructurados). Por eso `conjuntoRasgos()` deriva
- * el conjunto a comparar tokenizando ese texto a descriptores normalizados; si
- * en el futuro `rasgos.tatuajes` llega como arreglo de objetos {tipo, ubicacion}
- * también lo soporta y construye los pares. La semántica de comparación de
- * conjuntos (|intersección| / |conjunto mayor|) es idéntica a la del spec.
+ * TEXTO LIBRE (no como pares estructurados) y el lado AM (RNPDNO) muchas veces
+ * NO trae señas. Por eso `perfilRasgos()` no aplana el texto en una sola bolsa
+ * de palabras, sino que lo separa en tres dimensiones independientes del orden:
+ * FIGURA (qué dibujo/leyenda: águila, rosa, un nombre…), ZONA corporal canónica
+ * (antebrazo≈brazo, pantorrilla≈pierna) y LADO (izquierdo/derecho). La compara-
+ * ción (ver `scoreTatuajes`) prioriza la figura —la señal fuerte— y trata la
+ * zona/lado como matices, de modo que:
+ *   - que UNA fuente reporte señas y la otra no  -> NO comparable (se excluye;
+ *     la ausencia de señas no es evidencia, no descarta el par);
+ *   - "águila en brazo" vs "águila en pierna"   -> alto (misma figura);
+ *   - "pierna izquierda" vs "pierna derecha"     -> alto (misma zona);
+ *   - figuras/zonas distintas                    -> bajo pero con piso, porque
+ *     un desacuerdo de tatuajes es evidencia DÉBIL, no motivo de descarte.
+ * Razón de NO usar un LLM aquí: el cruce evalúa muchísimos pares (blocking) y
+ * exige un score auditable y determinista; un LLM por par sería caro, lento y
+ * no reproducible. El lugar correcto para NLP/LLM es ANTES, una sola vez por
+ * registro, normalizando el texto libre a {tipo, zona, lado} estructurado que
+ * este motor luego compara de forma determinista.
  */
 
 // ---------------------------------------------------------------------------
@@ -46,6 +59,18 @@ export type Campo = keyof typeof PESOS;
 const EDAD_DECAE_EN = 5; // años de distancia al rango forense hasta sim 0
 const ESTATURA_DECAE_EN = 8; // cm de diferencia hasta sim 0
 const FECHA_DECAE_EN = 365; // días entre desaparición y hallazgo hasta sim 0
+
+// Sub-pesos INTERNOS del campo tatuajes (no confundir con PESOS.tatuajes, que
+// es el peso del campo en el promedio global). Comparamos por dimensión y la
+// FIGURA manda: un diseño compartido es la señal fuerte; zona y lado matizan.
+const SUBPESO_FIGURA = 3;
+const SUBPESO_ZONA = 1;
+const SUBPESO_LADO = 0.5;
+// Piso de similitud cuando AMBAS fuentes reportaron señas pero NO coinciden: en
+// este dominio cada fuente registra subconjuntos distintos, así que el des-
+// acuerdo es evidencia DÉBIL. El piso evita que una diferencia de tatuajes
+// hunda el score y termine descartando un par que coincide en lo demás.
+const PISO_TATUAJE = 0.25;
 
 // ---------------------------------------------------------------------------
 // Tipos de entrada (solo los campos que necesita el motor). El `estado` y el
@@ -137,14 +162,25 @@ const noComparable = (peso: number, explicacion: string): CampoScore => ({
 });
 
 // ---------------------------------------------------------------------------
-// Extracción del conjunto de tatuajes/señas desde `rasgos` (jsonb).
+// Extracción del PERFIL de tatuajes/señas desde `rasgos` (jsonb).
 //
-// Devuelve { reporto, set }:
-//   - reporto: la fuente DIO información de tatuajes/señas (haya o no tokens).
-//   - set: descriptores normalizados a comparar como conjunto.
-// `reporto` es true sii el set quedó no vacío, de modo que comparar nunca
-// divide por cero.
+// En lugar de aplanar todo en una sola bolsa de palabras (que confunde QUÉ es
+// el tatuaje con DÓNDE está), separamos el texto en tres conjuntos, todos
+// independientes del orden en que aparezcan los tatuajes:
+//   - figuras: el dibujo/leyenda (águila, rosa, un nombre, una cruz…).
+//   - zonas:   región corporal CANÓNICA (antebrazo y muñeca -> "brazo", etc.).
+//   - lados:   "izquierdo" / "derecho".
+//   - reporto: la fuente DIO información de tatuajes/señas (algún conjunto != ∅).
+// `reporto` permite tratar "una fuente reportó y la otra no" como NO comparable.
 // ---------------------------------------------------------------------------
+
+/** Perfil de señas de una fuente, separado por dimensión (orden-independiente). */
+export interface PerfilRasgos {
+  reporto: boolean;
+  figuras: Set<string>;
+  zonas: Set<string>;
+  lados: Set<string>;
+}
 
 // Campos del jsonb que consideramos "tatuajes / señas particulares".
 const CLAVES_RASGOS = [
@@ -168,48 +204,108 @@ const VACIAS = new Set([
   "ningun", "tatuaje", "tatuajes", "tiene", "señas", "senas", "particulares",
 ]);
 
-/** Tokeniza texto libre a descriptores significativos (>=4 letras, sin vacías). */
-function tokenizar(texto: string, acc: Set<string>): void {
+// Token (ya normalizado, sin acentos) -> región corporal canónica. Agrupa
+// sinónimos y partes contiguas para que "antebrazo" y "muñeca" cuenten como la
+// misma zona que "brazo", etc.
+const ZONA_CANON: Record<string, string> = {
+  brazo: "brazo", brazos: "brazo", antebrazo: "brazo", antebrazos: "brazo",
+  bicep: "brazo", biceps: "brazo", triceps: "brazo", hombro: "brazo",
+  hombros: "brazo", codo: "brazo", muneca: "brazo", munecas: "brazo",
+  mano: "mano", manos: "mano", dedo: "mano", dedos: "mano", palma: "mano",
+  nudillo: "mano", nudillos: "mano",
+  pierna: "pierna", piernas: "pierna", muslo: "pierna", muslos: "pierna",
+  pantorrilla: "pierna", rodilla: "pierna", rodillas: "pierna", gemelo: "pierna",
+  tobillo: "pierna",
+  pie: "pie", pies: "pie", talon: "pie", empeine: "pie",
+  pecho: "torso", torax: "torso", abdomen: "torso", vientre: "torso",
+  estomago: "torso", costado: "torso", costilla: "torso", costillas: "torso",
+  busto: "torso", seno: "torso", senos: "torso", ombligo: "torso",
+  espalda: "espalda", omoplato: "espalda", lumbar: "espalda", columna: "espalda",
+  escapula: "espalda",
+  cuello: "cuello", nuca: "cuello", garganta: "cuello",
+  cara: "cara", rostro: "cara", mejilla: "cara", mejillas: "cara",
+  frente: "cara", menton: "cara", barbilla: "cara", ceja: "cara", cejas: "cara",
+  labio: "cara", labios: "cara", oreja: "cara", orejas: "cara", nariz: "cara",
+  pomulo: "cara", parpado: "cara",
+  cabeza: "cabeza", craneo: "cabeza",
+  gluteo: "gluteo", gluteos: "gluteo", nalga: "gluteo", nalgas: "gluteo",
+  cadera: "gluteo", caderas: "gluteo",
+};
+
+// Token -> lado canónico.
+const LADO_CANON: Record<string, string> = {
+  izquierdo: "izquierdo", izquierda: "izquierdo", izq: "izquierdo",
+  derecho: "derecho", derecha: "derecho", der: "derecho",
+};
+
+/**
+ * Clasifica cada palabra de un texto libre en su dimensión: primero lado, luego
+ * zona corporal (sinónimos canonizados); si no es ninguna y es significativa
+ * (>=4 letras, no vacía) se considera FIGURA (el qué del tatuaje).
+ */
+function clasificarTexto(texto: string | null | undefined, perfil: PerfilRasgos): void {
   for (const palabra of normalizar(texto).split(/[^a-z0-9ñ]+/)) {
-    if (palabra.length >= 4 && !VACIAS.has(palabra)) acc.add(palabra);
+    if (!palabra) continue;
+    const lado = LADO_CANON[palabra];
+    if (lado) { perfil.lados.add(lado); continue; }
+    const zona = ZONA_CANON[palabra];
+    if (zona) { perfil.zonas.add(zona); continue; }
+    if (palabra.length >= 4 && !VACIAS.has(palabra)) perfil.figuras.add(palabra);
   }
 }
 
-export function conjuntoRasgos(rasgos: unknown): { reporto: boolean; set: Set<string> } {
-  const set = new Set<string>();
-  if (rasgos == null) return { reporto: false, set };
+export function perfilRasgos(rasgos: unknown): PerfilRasgos {
+  const perfil: PerfilRasgos = {
+    reporto: false,
+    figuras: new Set(),
+    zonas: new Set(),
+    lados: new Set(),
+  };
+  if (rasgos == null) return perfil;
 
   // Caso texto libre directo (algunas fuentes guardan `rasgos` como string).
   if (typeof rasgos === "string") {
-    tokenizar(rasgos, set);
-    return { reporto: set.size > 0, set };
-  }
-
-  if (typeof rasgos === "object") {
+    clasificarTexto(rasgos, perfil);
+  } else if (typeof rasgos === "object") {
     const obj = rasgos as Record<string, unknown>;
     for (const clave of CLAVES_RASGOS) {
       const valor = obj[clave];
       if (valor == null) continue;
 
       if (typeof valor === "string") {
-        tokenizar(valor, set);
+        clasificarTexto(valor, perfil);
       } else if (Array.isArray(valor)) {
-        // Soporte para tatuajes estructurados: arreglo de {tipo, ubicacion}
-        // (o de strings). Cada uno se vuelve un descriptor del conjunto.
+        // Tatuajes estructurados: arreglo de {tipo, ubicacion, lado} o strings.
         for (const item of valor) {
           if (typeof item === "string") {
-            tokenizar(item, set);
+            clasificarTexto(item, perfil);
           } else if (item && typeof item === "object") {
             const it = item as Record<string, unknown>;
-            const tipo = normalizar(String(it.tipo ?? it.descripcion ?? ""));
-            const ubic = normalizar(String(it.ubicacion ?? it.ubicacion_cuerpo ?? it.zona ?? ""));
-            if (tipo || ubic) set.add(`${tipo}@${ubic}`);
+            clasificarTexto(String(it.tipo ?? it.descripcion ?? ""), perfil);
+            clasificarTexto(String(it.ubicacion ?? it.ubicacion_cuerpo ?? it.zona ?? ""), perfil);
+            clasificarTexto(String(it.lado ?? it.lateralidad ?? ""), perfil);
           }
         }
       }
     }
   }
-  return { reporto: set.size > 0, set };
+
+  perfil.reporto = perfil.figuras.size > 0 || perfil.zonas.size > 0 || perfil.lados.size > 0;
+  return perfil;
+}
+
+/** Coeficiente de solapamiento |a∩b| / |conjunto mayor| (0 si alguno es ∅). */
+function solapa(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / Math.max(a.size, b.size);
+}
+
+/** ¿Comparten al menos un elemento? */
+function intersecta(a: Set<string>, b: Set<string>): boolean {
+  for (const x of a) if (b.has(x)) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,34 +443,65 @@ function scoreLugar(p: PersonaAM, f: ForensePM): CampoScore {
 
 function scoreTatuajes(p: PersonaAM, f: ForensePM, pre?: PreCalculo): CampoScore {
   const peso = PESOS.tatuajes;
-  const rp = pre?.rasgosPersona ?? conjuntoRasgos(p.rasgos);
-  const rf = pre?.rasgosForense ?? conjuntoRasgos(f.rasgos);
+  const a = pre?.rasgosPersona ?? perfilRasgos(p.rasgos);
+  const b = pre?.rasgosForense ?? perfilRasgos(f.rasgos);
 
-  // No comparable SOLO si NINGUNA de las dos fuentes reportó tatuajes/señas.
-  if (!rp.reporto && !rf.reporto) {
+  // No comparable si NINGUNA reportó señas.
+  if (!a.reporto && !b.reporto) {
     return noComparable(peso, "no comparable: ninguna fuente reportó tatuajes/señas");
   }
+  // Si SOLO una reportó, la ausencia en la otra no es evidencia (familias y
+  // peritos registran subconjuntos distintos): se EXCLUYE, no se penaliza.
+  if (!a.reporto || !b.reporto) {
+    return noComparable(peso, "no comparable: solo una fuente reportó tatuajes/señas");
+  }
 
-  // Si una reportó y la otra no, su set está vacío -> 0 coincidencias.
-  let interseccion = 0;
-  for (const t of rp.set) if (rf.set.has(t)) interseccion++;
-  const mayor = Math.max(rp.set.size, rf.set.size);
-  const sim = mayor === 0 ? 0 : interseccion / mayor;
+  // Ambas reportaron: comparar dimensión por dimensión, solo las que ambas
+  // fuentes informan. La FIGURA pesa más (señal fuerte); zona y lado matizan.
+  const comps: { sim: number; w: number }[] = [];
+  const detalle: string[] = [];
 
-  const detalle = rp.reporto && rf.reporto
-    ? `${interseccion} en común de ${mayor} descriptor(es)`
-    : "una fuente reportó tatuajes/señas y la otra no";
-  return { comparable: true, similitud: sim, peso, explicacion: detalle };
+  if (a.figuras.size && b.figuras.size) {
+    const sim = solapa(a.figuras, b.figuras);
+    comps.push({ sim, w: SUBPESO_FIGURA });
+    detalle.push(`figura ${sim.toFixed(2)}`);
+  }
+  if (a.zonas.size && b.zonas.size) {
+    const sim = solapa(a.zonas, b.zonas);
+    comps.push({ sim, w: SUBPESO_ZONA });
+    detalle.push(`zona ${sim.toFixed(2)}`);
+  }
+  // El lado solo aporta si además comparten zona (un "izquierdo" de brazo no
+  // dice nada frente a un "derecho" de pierna).
+  if (a.lados.size && b.lados.size && intersecta(a.zonas, b.zonas)) {
+    const sim = intersecta(a.lados, b.lados) ? 1 : 0.3;
+    comps.push({ sim, w: SUBPESO_LADO });
+    detalle.push(`lado ${sim.toFixed(2)}`);
+  }
+
+  // Ambas reportaron pero en dimensiones que no se solapan (p.ej. una solo dio
+  // figura y la otra solo zona): no hay base de comparación -> no comparable.
+  if (comps.length === 0) {
+    return noComparable(peso, "no comparable: señas descritas en dimensiones distintas");
+  }
+
+  const pesoTotal = comps.reduce((s, c) => s + c.w, 0);
+  const bruta = comps.reduce((s, c) => s + c.sim * c.w, 0) / pesoTotal;
+  // Piso: un desacuerdo de señas es evidencia débil, nunca motivo de descarte.
+  const sim = Math.max(PISO_TATUAJE, bruta);
+  if (sim > bruta) detalle.push(`piso ${PISO_TATUAJE}`);
+
+  return { comparable: true, similitud: sim, peso, explicacion: detalle.join(", ") };
 }
 
 // ---------------------------------------------------------------------------
 // Score final: promedio ponderado de los campos COMPARABLES.
 // ---------------------------------------------------------------------------
 
-/** Conjuntos de rasgos ya calculados, para acelerar lotes grandes. */
+/** Perfiles de rasgos ya calculados, para acelerar lotes grandes. */
 export interface PreCalculo {
-  rasgosPersona?: { reporto: boolean; set: Set<string> };
-  rasgosForense?: { reporto: boolean; set: Set<string> };
+  rasgosPersona?: PerfilRasgos;
+  rasgosForense?: PerfilRasgos;
 }
 
 export function puntuar(persona: PersonaAM, forense: ForensePM, pre?: PreCalculo): Resultado {

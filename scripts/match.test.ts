@@ -13,7 +13,7 @@
 import {
   pasaBlocking,
   puntuar,
-  conjuntoRasgos,
+  perfilRasgos,
   PESOS,
   type PersonaAM,
   type ForensePM,
@@ -144,17 +144,56 @@ ok(puntuar(persona({ estado: "Jalisco" }), forense({ estado: "Sinaloa" })).desgl
 ok(puntuar(persona({ estado: null }), forense()).desglose.lugar.comparable === false,
   "falta estado -> no comparable");
 
-// tatuajes (texto libre -> conjuntos)
+// tatuajes (texto libre -> figura / zona / lado por separado)
+
+// Misma FIGURA, distinta zona: la figura manda -> alto.
+// figura solapa=1 (w3); zona brazo vs pierna=0 (w1) -> (1*3+0*1)/4 = 0.75.
+{
+  const s = puntuar(
+    persona({ rasgos: { tatuajes: "águila antebrazo" } }),
+    forense({ rasgos: { tatuajes: "águila pierna" } }),
+  ).desglose.tatuajes.similitud!;
+  ok(casi(s, 0.75), "misma figura distinta zona -> 0.75 (figura manda)", String(s));
+}
+
+// Misma ZONA, distinto LADO (sin figura): NO debe descartar.
+// "tatuaje" es palabra vacía -> sin figura; zona pierna solapa=1 (w1);
+// lado izq vs der=0.3 (w0.5) -> (1*1+0.3*0.5)/1.5 ≈ 0.767.
+{
+  const s = puntuar(
+    persona({ rasgos: { senas_particulares: "tatuaje en pierna izquierda" } }),
+    forense({ rasgos: { senas_particulares: "tatuaje en pierna derecha" } }),
+  ).desglose.tatuajes.similitud!;
+  ok(s > 0.5, "misma zona distinto lado -> alto, no descarta", String(s));
+}
+
+// Zonas totalmente distintas sin figura común: bajo PERO con piso (no es 0).
+// figura: una "aguila", otra "rosa" -> solapa 0 (w3); zona brazo vs pierna 0 (w1)
+// -> bruta 0 -> piso 0.25.
+{
+  const s = puntuar(
+    persona({ rasgos: { tatuajes: "águila brazo" } }),
+    forense({ rasgos: { tatuajes: "rosa pierna" } }),
+  ).desglose.tatuajes.similitud!;
+  ok(casi(s, 0.25), "señas distintas -> piso 0.25 (no descarta)", String(s));
+}
+
+// Solapamiento parcial de figuras.
+// figuras {aguila,cruz} vs {aguila} -> 1/2 (w3); zona brazo vs pierna 0 (w1)
+// -> (0.5*3 + 0*1)/4 = 0.375.
 {
   const s = puntuar(
     persona({ rasgos: { tatuajes: "águila antebrazo cruz" } }),
     forense({ rasgos: { tatuajes: "águila pierna" } }),
   ).desglose.tatuajes.similitud!;
-  ok(casi(s, 1 / 3), "tatuajes |∩|/|mayor| = 1/3", String(s));
+  ok(casi(s, 0.375), "solapamiento parcial de figuras -> 0.375", String(s));
 }
+
+// Solo una fuente reportó -> NO comparable (se EXCLUYE, no descarta). Este es
+// el caso real RNPDNO (AM sin señas) vs Jalisco (PM con señas).
 {
   const c = puntuar(persona({ rasgos: { tatuajes: "rosa hombro" } }), forense({ rasgos: null })).desglose.tatuajes;
-  ok(c.comparable === true && c.similitud === 0, "una fuente reportó y la otra no -> 0 (comparable)");
+  ok(c.comparable === false, "solo una fuente reportó señas -> no comparable (no descarta)");
 }
 ok(puntuar(persona({ rasgos: null }), forense({ rasgos: { estatus: "x" } })).desglose.tatuajes.comparable === false,
   "ninguna fuente reportó tatuajes -> no comparable");
@@ -194,11 +233,20 @@ console.log("\n# Promedio ponderado (solo comparables)");
   ok(casi(r.score, esperado), "caso mixto coincide con el cálculo manual", `score=${r.score} esperado=${esperado.toFixed(5)}`);
 }
 
-// conjuntoRasgos: detección de "reportó" y normalización de acentos.
-ok(conjuntoRasgos({ tatuajes: "Águila" }).set.has("aguila"), "conjuntoRasgos normaliza acentos");
-ok(conjuntoRasgos({ estatus: "Con Vida" }).reporto === false, "rasgos sin tatuajes/señas -> reporto false");
-ok(conjuntoRasgos({ tatuajes: [{ tipo: "Águila", ubicacion_cuerpo: "Antebrazo" }] }).set.has("aguila@antebrazo"),
-  "conjuntoRasgos soporta tatuajes estructurados {tipo, ubicacion_cuerpo}");
+// perfilRasgos: detección de "reportó", normalización de acentos y clasificación
+// por dimensión (figura / zona canónica / lado).
+ok(perfilRasgos({ tatuajes: "Águila" }).figuras.has("aguila"), "perfilRasgos normaliza acentos en figura");
+ok(perfilRasgos({ estatus: "Con Vida" }).reporto === false, "rasgos sin tatuajes/señas -> reporto false");
+{
+  const pr = perfilRasgos({ tatuajes: "águila en antebrazo izquierdo" });
+  ok(pr.figuras.has("aguila") && pr.zonas.has("brazo") && pr.lados.has("izquierdo"),
+    "perfilRasgos separa figura/zona-canónica/lado del texto libre");
+}
+{
+  const pr = perfilRasgos({ tatuajes: [{ tipo: "Águila", ubicacion_cuerpo: "Antebrazo", lado: "derecho" }] });
+  ok(pr.figuras.has("aguila") && pr.zonas.has("brazo") && pr.lados.has("derecho"),
+    "perfilRasgos soporta tatuajes estructurados {tipo, ubicacion_cuerpo, lado}");
+}
 
 // ---------------------------------------------------------------------------
 // Resumen
