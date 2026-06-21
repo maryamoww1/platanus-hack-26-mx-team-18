@@ -376,7 +376,11 @@
   align-items: center;
   text-align: center;
 }
-
+@media (max-width: 820px) {
+  .summary {
+    max-width: none;
+  }
+}
 .gaugeWrap {
   position: relative;
   width: 200px;

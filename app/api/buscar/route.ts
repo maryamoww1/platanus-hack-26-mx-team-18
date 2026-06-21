@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { puntuar, type PersonaAM, type ForensePM } from "@/lib/matching/score";
+import { rasgosATexto } from "@/lib/rasgos";
+import { validarBusqueda } from "@/lib/buscar/validacion";
 
 /**
  * POST /api/buscar
@@ -15,16 +17,31 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Cuerpo inválido" }, { status: 400 });
   }
 
+  const validacion = validarBusqueda({
+    nombre: body.nombre,
+    edad: body.edad,
+    estatura: body.estatura,
+    estado: body.estado,
+    fecha_desaparicion: body.fecha_desaparicion,
+    rasgos: body.rasgos,
+  });
+  if (!validacion.ok) {
+    return NextResponse.json({ error: validacion.mensaje }, { status: 400 });
+  }
+
+  const fechaRaw = body.fecha_desaparicion ? String(body.fecha_desaparicion) : "";
+  const fechaValida = /^\d{4}-\d{2}-\d{2}$/.test(fechaRaw) ? fechaRaw : null;
+
   const persona: PersonaAM = {
     id: -1,
     sexo: String(body.sexo ?? "Indeterminado"),
     edad: body.edad != null && body.edad !== "" ? Number(body.edad) : null,
     estatura:
       body.estatura != null && body.estatura !== "" ? Number(body.estatura) : null,
-    fecha_desaparicion: String(body.fecha_desaparicion ?? "1900-01-01"),
+    fecha_desaparicion: fechaValida,
     estado: body.estado ? String(body.estado) : null,
     municipio: body.municipio ? String(body.municipio) : null,
-    rasgos: body.rasgos ? String(body.rasgos) : null,
+    rasgos: body.rasgos ? rasgosATexto(body.rasgos) || null : null,
   };
 
   const supabase = await createClient();
@@ -39,7 +56,7 @@ export async function POST(req: Request) {
   if (persona.sexo === "Masculino" || persona.sexo === "Femenino") {
     base = base.in("sexo", [persona.sexo, "Indeterminado"]);
   }
-  if (persona.fecha_desaparicion && /^\d{4}-\d{2}-\d{2}$/.test(persona.fecha_desaparicion)) {
+  if (persona.fecha_desaparicion) {
     base = base.gte("fecha_hallazgo", persona.fecha_desaparicion);
   }
 

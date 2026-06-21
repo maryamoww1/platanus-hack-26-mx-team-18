@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import gsap from "gsap";
 import { createClient } from "@/lib/supabase/client";
+import { rasgosATexto } from "@/lib/rasgos";
+import { validarBusqueda } from "@/lib/buscar/validacion";
 import styles from "./buscador.module.css";
 
 const ESTADOS = [
@@ -13,6 +15,15 @@ const ESTADOS = [
   "Quintana Roo", "San Luis Potosí", "Sinaloa", "Sonora", "Tabasco",
   "Tamaulipas", "Tlaxcala", "Veracruz", "Yucatán", "Zacatecas",
 ];
+
+/** Alinea un estado de la BD con la opción del `<select>`. */
+function estadoParaSelect(estado: string | null): string {
+  if (!estado) return "";
+  const norm = (s: string) =>
+    s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const n = norm(estado);
+  return ESTADOS.find((e) => norm(e) === n) ?? estado;
+}
 
 type Match = {
   id: number;
@@ -36,7 +47,7 @@ type Persona = {
   estatura: number | null;
   sexo: string;
   fecha_desaparicion: string;
-  rasgos: string | null;
+  rasgos: unknown;
   estado: string | null;
   municipio: string | null;
 };
@@ -74,6 +85,9 @@ export default function Buscador() {
   const [personaSel, setPersonaSel] = useState<Persona | null>(null);
 
   const [matches, setMatches] = useState<Match[]>([]);
+  const [errorValidacion, setErrorValidacion] = useState<string | null>(null);
+
+  const limpiarError = () => setErrorValidacion(null);
 
   // --- Animación de entrada + luz ambiental que respira ---
   useEffect(() => {
@@ -138,7 +152,7 @@ export default function Buscador() {
         estatura: number | null;
         sexo: string;
         fecha_desaparicion: string;
-        rasgos: string | null;
+        rasgos: unknown;
         ultimo_lugar: { estado: string | null; municipio: string | null } | null;
       };
       const lista: Persona[] = ((data ?? []) as unknown as Fila[]).map((p) => ({
@@ -165,21 +179,46 @@ export default function Buscador() {
 
   function onNombreChange(valor: string) {
     setNombre(valor);
-    // Si edita el nombre tras haber elegido una persona, deja de estar "ligado".
+    setErrorValidacion(null);
     if (personaSel && valor !== personaSel.nombre) setPersonaSel(null);
   }
 
   function elegirPersona(p: Persona) {
+    const rasgosTexto = rasgosATexto(p.rasgos);
     setPersonaSel(p);
     setNombre(p.nombre);
     setSexo(p.sexo);
     setEdad(p.edad != null ? String(p.edad) : "");
     setEstatura(p.estatura != null ? String(Math.round(p.estatura)) : "");
-    setEstadoUbic(p.estado ?? "");
+    setEstadoUbic(estadoParaSelect(p.estado));
     setFecha(p.fecha_desaparicion ?? "");
-    setRasgos(p.rasgos ?? "");
+    setRasgos(rasgosTexto);
     setSugerencias([]);
     setAbierto(false);
+  }
+
+  async function buscarEnVivo(opts?: {
+    municipio?: string | null;
+    sinEstado?: boolean;
+  }): Promise<{ matches: Match[]; error?: string }> {
+    const res = await fetch("/api/buscar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sexo,
+        edad,
+        estatura,
+        estado: opts?.sinEstado ? "" : estadoUbic,
+        municipio: opts?.sinEstado ? null : (opts?.municipio ?? null),
+        fecha_desaparicion: fecha,
+        rasgos,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return { matches: [], error: data.error ?? "No se pudo completar la búsqueda." };
+    }
+    return { matches: data.matches ?? [] };
   }
 
   function mapearCoincidencias(filas: unknown[]): Match[] {
@@ -222,6 +261,21 @@ export default function Buscador() {
     if (estado === "loading") return;
     setAbierto(false);
 
+    const validacion = validarBusqueda({
+      personaId: personaSel?.id ?? null,
+      nombre,
+      edad,
+      estatura,
+      estado: estadoUbic,
+      fecha_desaparicion: fecha,
+      rasgos,
+    });
+    if (!validacion.ok) {
+      setErrorValidacion(validacion.mensaje);
+      return;
+    }
+    setErrorValidacion(null);
+
     // Salida elegante del formulario
     await new Promise<void>((resolve) => {
       gsap.to([heroRef.current, formRef.current], {
@@ -238,7 +292,7 @@ export default function Buscador() {
       let found: Match[] = [];
 
       if (personaSel) {
-        // Persona del registro nacional: leemos sus coincidencias precalculadas.
+        // Persona del registro nacional: coincidencias precalculadas, con fallback en vivo.
         const supabase = createClient();
         const { data } = await supabase
           .from("coincidencias")
@@ -249,22 +303,22 @@ export default function Buscador() {
           .order("puntaje", { ascending: false })
           .limit(8);
         found = mapearCoincidencias(data ?? []);
+
+        if (found.length === 0) {
+          const live = await buscarEnVivo({ municipio: personaSel.municipio });
+          found = live.matches;
+          if (live.error) setErrorValidacion(live.error);
+        }
+
+        if (found.length === 0 && estadoUbic) {
+          const live = await buscarEnVivo({ sinEstado: true });
+          found = live.matches;
+          if (live.error) setErrorValidacion(live.error);
+        }
       } else {
-        // Búsqueda manual: cálculo en vivo contra los forenses.
-        const res = await fetch("/api/buscar", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sexo,
-            edad,
-            estatura,
-            estado: estadoUbic,
-            fecha_desaparicion: fecha,
-            rasgos,
-          }),
-        });
-        const data = await res.json();
-        found = data.matches ?? [];
+        const live = await buscarEnVivo();
+        found = live.matches;
+        if (live.error) setErrorValidacion(live.error);
       }
 
       setMatches(found);
@@ -272,6 +326,7 @@ export default function Buscador() {
     } catch {
       setMatches([]);
       setEstado("empty");
+      setErrorValidacion("Ocurrió un error al buscar. Intenta de nuevo.");
     }
   }
 
@@ -337,6 +392,7 @@ export default function Buscador() {
   }, [estado, matches]);
 
   function reset() {
+    setErrorValidacion(null);
     gsap.to(resultsRef.current, {
       opacity: 0,
       y: 14,
@@ -360,11 +416,14 @@ export default function Buscador() {
   const chips = top ? top.razon.split(";").map((s) => s.trim()).filter(Boolean).slice(0, 4) : [];
 
   return (
-    <div className={styles.root} ref={rootRef}>
+    <div
+      className={`${styles.root}${estado === "results" ? ` ${styles.rootResults}` : ""}`}
+      ref={rootRef}
+    >
       <div className={styles.ambient} ref={ambientRef} />
       <div className={styles.grain} />
 
-      <div className={styles.stage}>
+      <div className={`${styles.stage}${estado === "results" ? ` ${styles.stageResults}` : ""}`}>
         {(estado === "idle" || estado === "loading") && (
           <>
             <div className={styles.hero} ref={heroRef}>
@@ -454,8 +513,8 @@ export default function Buscador() {
                       sugerencias.length === 0 &&
                       !personaSel && (
                         <div className={styles.suggestEmpty}>
-                          Sin reportes con ese nombre. Puedes llenar los datos
-                          manualmente abajo.
+                          Sin reportes con ese nombre. Bórralo y completa los
+                          datos manualmente, o elige una coincidencia del listado.
                         </div>
                       )}
                   </div>
@@ -474,7 +533,10 @@ export default function Buscador() {
                           type="button"
                           key={val}
                           className={`${styles.segBtn} ${sexo === val ? styles.segActive : ""}`}
-                          onClick={() => setSexo(val)}
+                          onClick={() => {
+                            setSexo(val);
+                            limpiarError();
+                          }}
                         >
                           {lbl}
                         </button>
@@ -490,7 +552,10 @@ export default function Buscador() {
                       max={120}
                       placeholder="años"
                       value={edad}
-                      onChange={(e) => setEdad(e.target.value)}
+                      onChange={(e) => {
+                        setEdad(e.target.value);
+                        limpiarError();
+                      }}
                     />
                   </div>
                   <div className={styles.field}>
@@ -502,7 +567,10 @@ export default function Buscador() {
                       max={230}
                       placeholder="cm"
                       value={estatura}
-                      onChange={(e) => setEstatura(e.target.value)}
+                      onChange={(e) => {
+                        setEstatura(e.target.value);
+                        limpiarError();
+                      }}
                     />
                   </div>
                 </div>
@@ -513,7 +581,10 @@ export default function Buscador() {
                     <select
                       className={styles.input}
                       value={estadoUbic}
-                      onChange={(e) => setEstadoUbic(e.target.value)}
+                      onChange={(e) => {
+                        setEstadoUbic(e.target.value);
+                        limpiarError();
+                      }}
                     >
                       <option value="">Sin especificar</option>
                       {ESTADOS.map((e) => (
@@ -528,7 +599,10 @@ export default function Buscador() {
                       type="date"
                       max="2026-06-21"
                       value={fecha}
-                      onChange={(e) => setFecha(e.target.value)}
+                      onChange={(e) => {
+                        setFecha(e.target.value);
+                        limpiarError();
+                      }}
                     />
                   </div>
                 </div>
@@ -539,7 +613,10 @@ export default function Buscador() {
                     className={styles.textarea}
                     placeholder="Tatuaje de golondrina en el antebrazo izquierdo, cicatriz en la ceja, lunar en la mejilla…"
                     value={rasgos}
-                    onChange={(e) => setRasgos(e.target.value)}
+                    onChange={(e) => {
+                      setRasgos(e.target.value);
+                      limpiarError();
+                    }}
                   />
                 </div>
 
@@ -548,6 +625,11 @@ export default function Buscador() {
                     ? `Ver coincidencias de ${personaSel.nombre.split(" ")[0]}`
                     : "Buscar coincidencias"}
                 </button>
+                {errorValidacion && (
+                  <p className={styles.validacion} role="alert">
+                    {errorValidacion}
+                  </p>
+                )}
                 <p className={styles.footnote}>
                   La búsqueda es anónima y no se guarda. Las coincidencias son
                   orientativas; toda identificación debe confirmarse por la autoridad.
@@ -586,8 +668,8 @@ export default function Buscador() {
         {estado === "empty" && (
           <div className={styles.empty} ref={resultsRef}>
             <p>
-              No encontramos coincidencias relevantes con estos datos. Probar con
-              menos restricciones, o detallar las señas particulares, puede ayudar.
+              {errorValidacion ??
+                "No encontramos coincidencias relevantes con estos datos. Probar con menos restricciones, o detallar las señas particulares, puede ayudar."}
             </p>
             <button className={styles.back} onClick={() => setEstado("idle")}>
               ← Nueva búsqueda
@@ -632,7 +714,7 @@ export default function Buscador() {
               </button>
             </div>
 
-            <div>
+            <div className={styles.listPanel}>
               <div className={styles.listHead}>
                 {matches.length} coincidencias encontradas
               </div>
