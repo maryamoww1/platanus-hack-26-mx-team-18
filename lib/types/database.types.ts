@@ -64,6 +64,8 @@ export type Database = {
           edad_inicial: number | null
           estatura: number | null
           fecha_hallazgo: string
+          fuente: string | null
+          fuente_id: string | null
           id: number
           lugar_hallazgo_id: number | null
           rasgos: Json | null
@@ -76,6 +78,8 @@ export type Database = {
           edad_inicial?: number | null
           estatura?: number | null
           fecha_hallazgo: string
+          fuente?: string | null
+          fuente_id?: string | null
           id?: number
           lugar_hallazgo_id?: number | null
           rasgos?: Json | null
@@ -88,6 +92,8 @@ export type Database = {
           edad_inicial?: number | null
           estatura?: number | null
           fecha_hallazgo?: string
+          fuente?: string | null
+          fuente_id?: string | null
           id?: number
           lugar_hallazgo_id?: number | null
           rasgos?: Json | null
@@ -105,16 +111,22 @@ export type Database = {
       }
       lugares: {
         Row: {
+          estado: string | null
           id: number
           lugar: string
+          municipio: string | null
         }
         Insert: {
+          estado?: string | null
           id?: number
           lugar: string
+          municipio?: string | null
         }
         Update: {
+          estado?: string | null
           id?: number
           lugar?: string
+          municipio?: string | null
         }
         Relationships: []
       }
@@ -125,6 +137,8 @@ export type Database = {
           edad: number | null
           estatura: number | null
           fecha_desaparicion: string
+          fuente: string | null
+          fuente_id: string | null
           id: number
           nombre: string
           rasgos: Json | null
@@ -137,6 +151,8 @@ export type Database = {
           edad?: number | null
           estatura?: number | null
           fecha_desaparicion: string
+          fuente?: string | null
+          fuente_id?: string | null
           id?: number
           nombre: string
           rasgos?: Json | null
@@ -149,6 +165,8 @@ export type Database = {
           edad?: number | null
           estatura?: number | null
           fecha_desaparicion?: string
+          fuente?: string | null
+          fuente_id?: string | null
           id?: number
           nombre?: string
           rasgos?: Json | null
