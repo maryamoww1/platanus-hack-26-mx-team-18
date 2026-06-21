@@ -1,1 +1,3 @@
-Put your project description in markdown here. It will render under your project voting page. See as reference [Platanus Hack 26: Buenos Aires voting page](https://hack.platan.us/26-ar/vote).
+Plataforma que cruza reportes de personas desaparecidas (datos ante mortem) contra registros de cuerpos y restos no identificados (datos post mortem) en México, para encontrar coincidencias probables y ayudar a familias y autoridades en la crisis de identificación forense.
+
+Ante la fragmentación de la información oficial, el sistema funciona como un agregador: recolecta datos de fuentes dispersas mediante scraping, los normaliza a un esquema común y los compara con un motor de score determinista y auditable que asigna un peso estadístico a cada variable (un tatuaje pesa mucho más que el color de cabello).
