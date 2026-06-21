@@ -1,4 +1,4 @@
-import { Database } from "../database.types";
+import { Database, Sexo } from "../database.types";
 import { aLugar } from "../lugar/adaptadores";
 import { Persona } from "./types";
 
@@ -15,7 +15,7 @@ export function aPersona(fila: PersonaFila, lugar: LugarFila | null): Persona {
     nombre: fila.nombre,
     edad: fila.edad,
     estatura: fila.estatura,
-    sexo: fila.sexo,
+    sexo: fila.sexo as Sexo, // la columna es text en la BD; aquí la acotamos
     fecha_desaparicion: fila.fecha_desaparicion,
     ultimo_lugar: lugar ? aLugar(lugar) : null,
     rasgos: fila.rasgos,

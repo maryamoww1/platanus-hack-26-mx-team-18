@@ -1,4 +1,4 @@
-import { Database } from "../database.types";
+import { Database, Sexo } from "../database.types";
 import { aLugar } from "../lugar/adaptadores";
 import { Forense } from "./types";
 
@@ -15,7 +15,7 @@ export function aForense(fila: ForenseFila, lugar: LugarFila | null): Forense {
     edad_inicial: fila.edad_inicial,
     edad_final: fila.edad_final,
     estatura: fila.estatura,
-    sexo: fila.sexo,
+    sexo: fila.sexo as Sexo, // la columna es text en la BD; aquí la acotamos
     fecha_hallazgo: fila.fecha_hallazgo,
     lugar_hallazgo: lugar ? aLugar(lugar) : null,
     rasgos: fila.rasgos,

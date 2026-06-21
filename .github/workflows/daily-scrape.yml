@@ -1,0 +1,72 @@
+name: Scrape diario
+
+# Corre los scrapers y el match todos los días para mantener la base al día.
+# - Automático: 09:00 UTC = 03:00 hora del centro de México (CST, UTC-6).
+# - Manual: pestaña Actions > "Scrape diario" > "Run workflow".
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+# Si una corrida sigue activa cuando empieza la siguiente, no las encimamos.
+concurrency:
+  group: daily-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330 # tope de seguridad (~5.5 h); los jobs gratis aguantan hasta 6 h.
+
+    # Llaves: configúralas en GitHub > Settings > Secrets and variables > Actions.
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+
+    steps:
+      - name: Clonar el repo
+        uses: actions/checkout@v4
+
+      - name: Instalar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Instalar Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Instalar dependencias
+        run: pnpm install --frozen-lockfile
+
+      # Los scripts cargan las llaves desde .env.local; lo generamos desde los Secrets.
+      - name: Generar .env.local desde los Secrets
+        run: |
+          {
+            echo "NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}"
+            echo "SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}"
+            echo "FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}"
+          } > .env.local
+
+      - name: Scrape Jalisco (IJCF)
+        continue-on-error: true
+        run: pnpm scrape:jalisco
+
+      - name: Scrape Sinaloa (32 estados)
+        continue-on-error: true
+        run: pnpm scrape:sinaloa
+
+      - name: Scrape RNPDNO (todo México)
+        continue-on-error: true
+        run: pnpm scrape:rnpdno todos
+
+      - name: Scrape Firecrawl (32 estados)
+        continue-on-error: true
+        run: pnpm scrape:firecrawl estados
+
+      # El match SÍ debe fallar ruidosamente si truena: es el resultado final.
+      - name: Cruce persona <-> forense (match)
+        run: pnpm match
