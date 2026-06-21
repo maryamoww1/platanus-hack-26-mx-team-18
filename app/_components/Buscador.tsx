@@ -5,6 +5,8 @@ import gsap from "gsap";
 import { createClient } from "@/lib/supabase/client";
 import { rasgosATexto } from "@/lib/rasgos";
 import { validarBusqueda } from "@/lib/buscar/validacion";
+import { referenciaForense } from "@/lib/fuentes/referencia";
+import { acotarPuntaje, PUNTAJE_MAX } from "@/lib/matching/score";
 import styles from "./buscador.module.css";
 
 const ESTADOS = [
@@ -38,6 +40,8 @@ type Match = {
   municipio: string | null;
   tatuajes: string | null;
   senas: string | null;
+  fuenteEtiqueta: string;
+  urlFuente: string | null;
 };
 
 type Persona = {
@@ -230,6 +234,8 @@ export default function Buscador() {
       edad_final: number | null;
       estatura: number | null;
       fecha_hallazgo: string;
+      fuente: string | null;
+      fuente_id: string | null;
       rasgos: unknown;
       lugar_hallazgo: Lugar;
     };
@@ -239,9 +245,10 @@ export default function Buscador() {
       .map((c) => {
         const f = c.forense!;
         const r = (f.rasgos ?? {}) as Record<string, unknown>;
+        const ref = referenciaForense(f.fuente, f.fuente_id);
         return {
           id: f.id,
-          puntaje: Number(c.puntaje),
+          puntaje: acotarPuntaje(Number(c.puntaje)),
           razon: c.razon ?? "",
           sexo: f.sexo,
           edad_inicial: f.edad_inicial,
@@ -252,6 +259,8 @@ export default function Buscador() {
           municipio: f.lugar_hallazgo?.municipio ?? null,
           tatuajes: typeof r.tatuajes === "string" ? r.tatuajes : null,
           senas: typeof r.senas_particulares === "string" ? r.senas_particulares : null,
+          fuenteEtiqueta: ref.etiqueta,
+          urlFuente: ref.url,
         };
       });
   }
@@ -297,7 +306,7 @@ export default function Buscador() {
         const { data } = await supabase
           .from("coincidencias")
           .select(
-            "puntaje,razon, forense:forense_id(id,sexo,edad_inicial,edad_final,estatura,fecha_hallazgo,rasgos, lugar_hallazgo:lugares!forense_lugar_hallazgo_id_fkey(estado,municipio))",
+            "puntaje,razon, forense:forense_id(id,sexo,edad_inicial,edad_final,estatura,fecha_hallazgo,fuente,fuente_id,rasgos, lugar_hallazgo:lugares!forense_lugar_hallazgo_id_fkey(estado,municipio))",
           )
           .eq("persona_id", personaSel.id)
           .order("puntaje", { ascending: false })
@@ -346,7 +355,7 @@ export default function Buscador() {
         tl.to(
           arcRef.current,
           {
-            strokeDashoffset: GAUGE_C * (1 - Math.min(top.puntaje, 100) / 100),
+            strokeDashoffset: GAUGE_C * (1 - Math.min(top.puntaje, PUNTAJE_MAX) / PUNTAJE_MAX),
             duration: 1.5,
             ease: "power2.inOut",
           },
@@ -381,7 +390,7 @@ export default function Buscador() {
         "-=1.1",
       );
       gsap.to(`.${styles.barFill}`, {
-        width: (i) => `${Math.min(matches[i]?.puntaje ?? 0, 100)}%`,
+        width: (i) => `${Math.min(matches[i]?.puntaje ?? 0, PUNTAJE_MAX)}%`,
         duration: 1.1,
         delay: 0.5,
         stagger: 0.08,
@@ -719,26 +728,55 @@ export default function Buscador() {
                 {matches.length} coincidencias encontradas
               </div>
               <div className={`${styles.list} scroll-area`}>
-                {matches.map((m) => (
-                  <article className={styles.card} key={m.id}>
-                    <div className={styles.cardTop}>
-                      <span className={styles.cardId}>Registro #{m.id}</span>
-                      <span className={styles.cardScore}>{Math.round(m.puntaje)}%</span>
-                    </div>
-                    <div className={styles.cardMeta}>
-                      {m.estado ?? "Estado n/d"}
-                      {m.municipio ? `, ${m.municipio}` : ""} ·{" "}
-                      {m.edad_inicial != null
-                        ? `${m.edad_inicial}–${m.edad_final ?? m.edad_inicial} años`
-                        : "edad n/d"}{" "}
-                      · hallazgo {m.fecha_hallazgo}
-                    </div>
-                    <div className={styles.bar}>
-                      <div className={styles.barFill} />
-                    </div>
-                    {m.razon && <div className={styles.cardReason}>{m.razon}</div>}
-                  </article>
-                ))}
+                {matches.map((m) => {
+                  const contenido = (
+                    <>
+                      <div className={styles.cardTop}>
+                        <span className={styles.cardId}>Registro #{m.id}</span>
+                        <span className={styles.cardScore}>{Math.round(m.puntaje)}%</span>
+                      </div>
+                      <div className={styles.cardMeta}>
+                        {m.estado ?? "Estado n/d"}
+                        {m.municipio ? `, ${m.municipio}` : ""} ·{" "}
+                        {m.edad_inicial != null
+                          ? `${m.edad_inicial}–${m.edad_final ?? m.edad_inicial} años`
+                          : "edad n/d"}{" "}
+                        · hallazgo {m.fecha_hallazgo}
+                      </div>
+                      <div className={styles.bar}>
+                        <div className={styles.barFill} />
+                      </div>
+                      {m.razon && <div className={styles.cardReason}>{m.razon}</div>}
+                      <div className={styles.cardFuente}>
+                        {m.urlFuente ? (
+                          <span className={styles.cardFuenteLink}>
+                            Fuente: {m.fuenteEtiqueta} ↗
+                          </span>
+                        ) : (
+                          <span className={styles.cardFuenteRef}>
+                            Fuente: {m.fuenteEtiqueta}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  );
+
+                  return m.urlFuente ? (
+                    <a
+                      className={`${styles.card} ${styles.cardLink}`}
+                      key={m.id}
+                      href={m.urlFuente}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {contenido}
+                    </a>
+                  ) : (
+                    <article className={styles.card} key={m.id}>
+                      {contenido}
+                    </article>
+                  );
+                })}
               </div>
             </div>
           </div>
